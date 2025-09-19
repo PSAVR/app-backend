@@ -12,7 +12,6 @@ const JWT_SECRET = process.env.JWT_SECRET;
 const FRONT_URL  = process.env.FRONT_URL;
 
 
-
 function requireAuth(req, res, next) {
   try {
     const token =
@@ -26,6 +25,28 @@ function requireAuth(req, res, next) {
   }
 }
 
+router.post("/login", async (req, res) => {
+  const { email, password } = req.body || {};
+  const { rows } = await query(`SELECT * FROM "user" WHERE email=$1`, [email]);
+  const user = rows[0];
+  if (!user) return res.status(404).json({ error: "Usuario no encontrado" });
+
+  const ok = await bcrypt.compare(password, user.password);
+  if (!ok) return res.status(401).json({ error: "Credenciales inválidas" });
+
+  const token = jwt.sign({ user_id: user.user_id }, JWT_SECRET, { expiresIn: "7d" });
+    res.cookie("token", token, {
+    httpOnly: true,
+    sameSite: "lax",
+    secure: false,
+    path: "/",          // ensure sent to all routes
+    maxAge: 7 * 24 * 60 * 60 * 1000
+  });
+
+  res.json({ user_id: user.user_id, email: user.email, username: user.username });
+});
+
+// =============== REGISTRO ==================
 router.post("/register", async (req, res) => {
   const { email, password, username, college, birthdate, gender } = req.body;
 
@@ -44,7 +65,7 @@ router.post("/register", async (req, res) => {
      VALUES ($1,$2,$3,$4,$5,$6) RETURNING user_id,email,username, created_at`,
     [email, hash, username, college, birthdate, gender]
   );
-
+  
   const token = jwt.sign({ user_id: result.rows[0].user_id }, JWT_SECRET, { expiresIn: "7d" });
 
   res.cookie('token', token, {
@@ -79,5 +100,6 @@ router.get('/me', requireAuth, async (req, res) => {
     return res.status(500).json({ error: 'server error' });
   }
 });
+
 
 export default router;
