@@ -11,6 +11,14 @@ const router = express.Router();
 const JWT_SECRET = process.env.JWT_SECRET;
 const FRONT_URL  = process.env.FRONT_URL;
 
+// --- Configurar el transporte de correo ---
+const transporter = nodemailer.createTransport({
+  service: "gmail",
+  auth: {
+    user: process.env.MAIL_USER,
+    pass: process.env.MAIL_PASS,
+  },
+});
 
 function requireAuth(req, res, next) {
   try {
@@ -25,6 +33,7 @@ function requireAuth(req, res, next) {
   }
 }
 
+// =============== LOGIN =====================
 router.post("/login", async (req, res) => {
   const { email, password } = req.body || {};
   const { rows } = await query(`SELECT * FROM "user" WHERE email=$1`, [email]);
@@ -101,5 +110,53 @@ router.get('/me', requireAuth, async (req, res) => {
   }
 });
 
+router.post('/logout', (_req, res) => {
+  res.clearCookie('token', { httpOnly:true, sameSite:'lax', secure:false });
+  res.json({ ok: true });
+});
+
+// =============== RECUPERAR CONTRASEÑA ===============
+router.post("/forgot", async (req, res) => {
+  try {
+    const { email } = req.body;
+    const userRes = await query(`SELECT username FROM "user" WHERE email=$1`, [email]);
+    if (!userRes.rows.length) return res.status(404).json({ error: "Usuario no encontrado" });
+
+    const token = jwt.sign({ email }, JWT_SECRET, { expiresIn: "15m" });
+    const link = `${FRONT_URL}/pages/reset.html?token=${token}`;
+
+    await transporter.sendMail({
+      from: `"VR App" <${process.env.MAIL_USER}>`,
+      to: email,
+      subject: "Recuperación de contraseña",
+      html: `
+        <p>Hola ${userRes.rows[0].username},</p>
+        <p>Haz clic en el siguiente enlace para restablecer tu contraseña (válido 15 min):</p>
+        <a href="${link}">${link}</a>
+      `,
+    });
+
+    res.json({ message: "Correo de recuperación enviado correctamente" });
+  } catch (err) {
+    console.error("Error en /forgot:", err);
+    res.status(500).json({ error: "Error interno del servidor" });
+  }
+});
+
+// =============== ACTUALIZAR CONTRASEÑA ===============
+router.post("/reset/:token", async (req, res) => {
+  try {
+    const { newPassword } = req.body;
+    const decoded = jwt.verify(req.params.token, JWT_SECRET);
+    const email = decoded.email;
+
+    const hash = await bcrypt.hash(newPassword, 10);
+    await query(`UPDATE "user" SET password=$1 WHERE email=$2`, [hash, email]);
+    res.json({ message: "Contraseña actualizada correctamente" });
+  } catch (err) {
+    console.error("Error en /reset:", err);
+    res.status(400).json({ error: "Token inválido o expirado" });
+  }
+});
 
 export default router;
