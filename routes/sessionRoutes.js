@@ -1,5 +1,7 @@
 import express from "express";
 import multer from "multer";
+import fetch from "node-fetch";
+import fss from "node:fs";
 import ffmpeg from "fluent-ffmpeg";
 import ffmpegPath from "ffmpeg-static";
 import fs from "node:fs/promises";
@@ -139,16 +141,46 @@ router.post("/audio", requireAuth, upload.single("audio"), async (req, res) => {
     // Enviar al modelo
     const wavBuf = await fs.readFile(wavFile);
     const fd = new FormData();
-    fd.append("file", new Blob([wavBuf], { type: "audio/wav" }), "audio.wav");
+    fd.append("file", fss.createReadStream(wavFile), {
+      filename: "audio.wav",
+      contentType: "audio/wav",
+    });
     fd.append("user_id", String(user_id));
 
-    const enqueue = await fetch(`${MODEL_API_URL}/anxiety_async`, { method: "POST", body: fd });
+    const enqueue = await fetch(`${MODEL_API_URL}/anxiety_async`, { method: "POST", body: fd, headers: fd.getHeaders(), });
     if (!enqueue.ok) throw new Error(`Modelo enqueue fallo: ${enqueue.status}`);
     const { task_id } = await enqueue.json();
     if (!task_id) throw new Error("Modelo: no entregó task_id");
 
-    // aca se llama resultado del modelo (en proceso)
-    
+    // Polling del resultado
+    let anxiety_pct;
+    const t0 = Date.now();
+    while (true) {
+      const r = await fetch(`${MODEL_API_URL}/result/${encodeURIComponent(task_id)}`);
+      if (r.ok) {
+        const data = await r.json();
+        if (data?.status === "done") {
+          anxiety_pct = Number(data.result?.model?.anxiety_pct ?? data.result?.anxiety_pct);
+          break;
+        }
+      }
+      if (Date.now() - t0 > 10 * 60 * 1000) throw new Error("Timeout esperando resultado del modelo");
+      await new Promise((r) => setTimeout(r, 2000));
+    }
+
+    if (!Number.isFinite(anxiety_pct)) throw new Error("Modelo sin anxiety_pct");
+
+    // Calcular métricas
+    const band = bandFromAnxiety(anxiety_pct);
+    const stars = starsFromAnxietyByImmersion(immersion_level_name, anxiety_pct);
+    const progress = Math.max(0, Math.min(100, 100 - anxiety_pct));
+
+    await query("BEGIN");
+    const todayKey = limaDateKey(new Date());
+    await query("SELECT pg_advisory_xact_lock($1,$2)", [
+      user_id,
+      lockKey2(immersion_level_id, todayKey),
+    ]);
 
     const sres = await query(
       `INSERT INTO session (user_id, level_id)
