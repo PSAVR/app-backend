@@ -216,22 +216,101 @@ router.post("/audio", requireAuth, upload.single("audio"), async (req, res) => {
   }
 });
 
-router.get("/user/:id/progress", requireAuth, async (req, res) => {
+
+router.post('/eval/audio', upload.single('audio'), async (req, res) => {
+  const stage = { v: 'start' };
   try {
-    const userId = Number(req.params.id);
-    const sql = `
-      SELECT l.level_id, l.name, l.difficulty_order,
-             ulp.attempts, ulp.max_stars, ulp.max_progress
-      FROM level l
-      LEFT JOIN user_level_progress ulp
-      ON ulp.level_id = l.level_id AND ulp.user_id = $1
-      ORDER BY l.difficulty_order ASC
-    `;
-    const { rows } = await query(sql, [userId]);
-    res.json(rows);
-  } catch (err) {
-    console.error("progress error", err);
-    res.status(500).json({ error: "no se pudo obtener el progreso" });
+    const user_id  = Number(req.body.user_id || req.userId);
+    let immersion_level_id   = req.body.immersion_level_id ? Number(req.body.immersion_level_id) : null;
+    let immersion_level_name = (req.body.immersion_level_name || '').trim();
+
+    if (!user_id || !req.file) {
+      return res.status(400).json({ error: 'user_id y audio son requeridos' });
+    }
+    if (!immersion_level_id && !immersion_level_name) {
+      immersion_level_id = req.body.level_id ? Number(req.body.level_id) : null;
+    }
+    if (!immersion_level_id && !immersion_level_name) {
+      return res.status(400).json({ error: 'Nivel de inmersión requerido' });
+    }
+
+    stage.v = 'validate-level';
+    if (immersion_level_name) {
+      const r = await query(`SELECT level_id, name FROM level WHERE LOWER(name)=LOWER($1) LIMIT 1`, [immersion_level_name]);
+      if (!r.rows.length) return res.status(422).json({ error: 'Nivel de inmersión no válido (name)' });
+      immersion_level_id   = r.rows[0].level_id;
+      immersion_level_name = r.rows[0].name;
+    } else {
+      const r = await query(`SELECT name FROM level WHERE level_id=$1`, [immersion_level_id]);
+      if (!r.rows.length) return res.status(422).json({ error: 'Nivel de inmersión no válido (id)' });
+      immersion_level_name = r.rows[0].name;
+    }
+
+    stage.v = 'ffmpeg';
+    const inFile  = req.file.path;
+    const wavFile = `${inFile}.wav`;
+    await new Promise((resolve, reject) => {
+      ffmpeg(inFile).audioChannels(1).audioFrequency(16000).toFormat('wav')
+        .on('error', reject)
+        .on('end', resolve)
+        .save(wavFile);
+    });
+
+    stage.v = 'model-enqueue';
+    const wavBuf = await fs.readFile(wavFile);
+    const fd = new FormData();
+    fd.append('file',fss.createReadStream(wavFile), {
+      filename: 'audio.wav',
+      contentType: 'audio/wav',
+    });
+    fd.append('user_id', String(user_id));
+
+    const enqueue = await fetch(`${MODEL_API_URL.replace(/\/$/, '')}/anxiety_async`, {
+      method: 'POST',
+      body: fd
+    });
+    if (!enqueue.ok) {
+      const body = await enqueue.text().catch(() => '');
+      throw new Error(`Modelo enqueue fallo: ${enqueue.status} ${body.slice(0,200)}`);
+    }
+    const { task_id } = await enqueue.json();
+    if (!task_id) return res.status(502).json({ error: 'Modelo: no entregó task_id' });
+
+    stage.v = 'model-poll';
+    let anxiety_pct;
+    const t0 = Date.now();
+    while (true) {
+      const r = await fetch(`${MODEL_API_URL}/result/${encodeURIComponent(task_id)}`, { method: 'GET' });
+      if (r.ok) {
+        const data = await r.json();
+        if (data?.status === 'done') {
+          const payload = data.result || data;
+          anxiety_pct = Number(payload?.model?.anxiety_pct ?? payload?.anxiety_pct);
+          break;
+        }
+      }
+      if ((Date.now() - t0) > 10 * 60 * 1000) throw new Error('Timeout esperando resultado del modelo');
+      await new Promise(rs => setTimeout(rs, 2000));
+    }
+    if (!Number.isFinite(anxiety_pct)) throw new Error('Modelo: respuesta sin anxiety_pct');
+
+    stage.v = 'scoring';
+    const band        = bandFromAnxiety(anxiety_pct);
+    const star_rating = starsFromAnxietyByImmersion(immersion_level_name, anxiety_pct);
+    const progress_internal = Math.max(0, Math.min(100, 100 - anxiety_pct));
+
+    stage.v = 'cleanup';
+    await fs.unlink(req.file.path).catch(()=>{});
+    await fs.unlink(`${req.file.path}.wav`).catch(()=>{});
+
+    stage.v = 'respond';
+    return res.status(200).json({
+      model: { anxiety_pct, band, immersion_level: immersion_level_name },
+      detail: { star_rating, progress_percentage: progress_internal }
+    });
+  } catch (e) {
+    console.error('eval-audio error at stage:', stage.v, e);
+    return res.status(500).json({ error: 'Fallo en servidor', stage: stage.v, message: String(e?.message || e) });
   }
 });
 

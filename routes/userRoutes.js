@@ -140,4 +140,93 @@ router.post("/me/assign-initial-level", requireAuth, async (req, res) => {
   }
 });
 
+router.get('/:userId/history/level/:levelId', async (req, res) => {
+  try {
+    const userId = Number(req.params.userId);
+    const levelId = Number(req.params.levelId);
+    const { start, end } = req.query;
+    const tz = 'America/Lima';
+
+    if (!userId || !levelId)
+      return res.status(400).json({ error: 'userId y levelId requeridos' });
+
+    // Rango predeterminado → últimos 7 días
+    const endDate = end || new Date().toISOString().slice(0, 10);
+    const startDate =
+      start ||
+      new Date(Date.now() - 6 * 86400000).toISOString().slice(0, 10);
+
+    const sql = `
+      SELECT
+        (d.played_at AT TIME ZONE $5)::date AS day,
+        d.progress_percentage,
+        d.performance_summary,
+        d.star_rating,
+        d.emotion_result,
+        d.pauses_count,
+        d.played_at
+      FROM session s
+      JOIN session_detail d ON d.session_id = s.session_id
+      WHERE s.user_id = $1
+        AND s.level_id = $2
+        AND (d.played_at AT TIME ZONE $5)::date >= $3::date
+        AND (d.played_at AT TIME ZONE $5)::date <= $4::date
+      ORDER BY day ASC
+    `;
+
+    const { rows } = await query(sql, [userId, levelId, startDate, endDate, tz]);
+    res.json(rows);
+  } catch (e) {
+    console.error('user history by level error', e);
+    res.status(500).json({ error: 'server error' });
+  }
+});
+
+router.get('/:id/progress', requireAuth, async (req, res) => {
+  try {
+    const userId = Number(req.params.id);
+
+    const sql = `
+      SELECT
+        l.level_id,
+        l.name AS level_name,
+        l.difficulty_order,
+        COALESCE(ulp.attempts, 0)      AS attempts,
+        COALESCE(ulp.max_stars, 0)     AS max_stars,
+        COALESCE(ulp.max_progress, 0)  AS max_progress,
+        ulp.passed,
+        ulp.date                       AS last_update
+      FROM level l
+      LEFT JOIN user_level_progress ulp
+             ON ulp.level_id = l.level_id
+            AND ulp.user_id  = $1
+      ORDER BY l.difficulty_order ASC;
+    `;
+
+    const { rows } = await query(sql, [userId]);
+
+    // Para la UI: 0★→0%, 1★→33%, 2★→66%, 3★→100%
+    const out = rows.map(r => {
+      const ms = Math.max(0, Math.min(3, Number(r.max_stars || 0)));
+      const panel_progress = Math.round((ms / 3) * 100);
+      return {
+        level_id: r.level_id,
+        name: r.name,
+        difficulty_order: r.difficulty_order,
+        attempts: Number(r.attempts || 0),
+        max_stars: ms,
+        max_progress: Number(r.max_progress || 0), // “qué tan cerca de 3★”
+        passed: !!r.passed,
+        panel_progress,
+        last_update: r.last_update || null,
+      };
+    });
+
+    res.json(out);
+  } catch (e) {
+    console.error('progress error', e);
+    res.status(500).json({ error: 'no se pudo obtener el progreso' });
+  }
+});
+
 export default router;
