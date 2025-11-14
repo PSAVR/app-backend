@@ -57,7 +57,7 @@ router.post("/login", async (req, res) => {
 
 // =============== REGISTRO ==================
 router.post("/register", async (req, res) => {
-  const { email, password, username, college, birthdate, gender } = req.body;
+  const { email, password, username, college, college_id, birthdate, gender } = req.body;
 
   const exists = await query(
     `SELECT 1 FROM "user" WHERE email=$1 OR username=$2 LIMIT 1`,
@@ -70,18 +70,18 @@ router.post("/register", async (req, res) => {
   const hash = await bcrypt.hash(password, 10);
 
   const result = await query(
-    `INSERT INTO "user"(email,password,username,college,birthdate,gender)
-     VALUES ($1,$2,$3,$4,$5,$6) RETURNING user_id,email,username, created_at`,
-    [email, hash, username, college, birthdate, gender]
+    `INSERT INTO "user"(email,password,username,college,college_id,birthdate,gender)
+     VALUES ($1,$2,$3,$4,$5,$6,$7)
+     RETURNING user_id,email,username, created_at`,
+    [email, hash, username, college, college_id, birthdate, gender]
   );
-  
-  const token = jwt.sign({ user_id: result.rows[0].user_id }, JWT_SECRET, { expiresIn: "7d" });
 
-  res.cookie('token', token, {
-    httpOnly: true, sameSite: 'lax', secure: false, maxAge: 7*24*60*60*1000
-  });
-  res.status(201).json(result.rows[0]);
+  const token = jwt.sign({ user_id: result.rows[0].user_id }, JWT_SECRET, { expiresIn: "7d" });
+  res
+    .cookie("token", token, { httpOnly: true, sameSite: "lax", secure: false })
+    .json(result.rows[0]);
 });
+
 
 router.get('/me', requireAuth, async (req, res) => {
   try {
