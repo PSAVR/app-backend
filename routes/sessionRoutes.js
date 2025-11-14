@@ -47,6 +47,23 @@ function starsFromAnxietyByImmersion(levelName, a) {
   return 1;
 }
 
+function decideNextLevel(immersionLevelId, starRating, anxietyPct, currentLevelDb) {
+  let next = currentLevelDb || immersionLevelId;
+
+  if (anxietyPct < 33) {
+    return 3;
+  }
+
+  if (starRating === 3) {
+    if (immersionLevelId === 1) next = 2; 
+    if (immersionLevelId === 2) next = 3; 
+    if (immersionLevelId === 3) next = 3; 
+  }
+
+  return Math.max(next, currentLevelDb || immersionLevelId);
+}
+
+
 function limaDateKey(d = new Date()) {
   const fmt = new Intl.DateTimeFormat("es-PE", {
     timeZone: TZ,
@@ -114,7 +131,6 @@ router.post("/audio", requireAuth, upload.single("audio"), async (req, res) => {
     if (!user_id || !req.file)
       return res.status(400).json({ error: "user_id y audio son requeridos" });
 
-    // Validar o resolver nivel
     if (!immersion_level_id && immersion_level_name) {
       const r = await query(
         `SELECT level_id, name FROM level WHERE LOWER(name)=LOWER($1) LIMIT 1`,
@@ -154,13 +170,33 @@ router.post("/audio", requireAuth, upload.single("audio"), async (req, res) => {
 
     // Polling del resultado
     let anxiety_pct;
+    let pausesCount = null;
+
     const t0 = Date.now();
     while (true) {
       const r = await fetch(`${MODEL_API_URL}/result/${encodeURIComponent(task_id)}`);
       if (r.ok) {
         const data = await r.json();
         if (data?.status === "done") {
-          anxiety_pct = Number(data.result?.model?.anxiety_pct ?? data.result?.anxiety_pct);
+          const payload = data.result || data;
+          const model   = payload.model || payload;
+
+          const rawAnxiety = model?.anxiety_pct ?? payload?.anxiety_pct;
+          const rawPauses  = model?.pause_count ?? model?.pauses_count;
+
+          if (rawAnxiety === null || typeof rawAnxiety === "undefined") {
+            anxiety_pct = NaN;
+          } else {
+            anxiety_pct = Number(rawAnxiety);
+          }
+
+          if (rawPauses !== null && typeof rawPauses !== "undefined") {
+            const n = Number(rawPauses);
+            if (Number.isFinite(n) && n >= 0) {
+              pausesCount = Math.round(n);
+            }
+          }
+
           break;
         }
       }
@@ -168,12 +204,14 @@ router.post("/audio", requireAuth, upload.single("audio"), async (req, res) => {
       await new Promise((r) => setTimeout(r, 2000));
     }
 
-    if (!Number.isFinite(anxiety_pct)) throw new Error("Modelo sin anxiety_pct");
+    if (!Number.isFinite(anxiety_pct)) {
+      throw new Error("Modelo sin anxiety_pct");
+    }
 
-    // Calcular métricas
     const band = bandFromAnxiety(anxiety_pct);
     const stars = starsFromAnxietyByImmersion(immersion_level_name, anxiety_pct);
-    const progress = Math.max(0, Math.min(100, 100 - anxiety_pct));
+    const progress = Math.round((stars / 3) * 100);
+
 
     await query("BEGIN");
     const todayKey = limaDateKey(new Date());
@@ -194,9 +232,48 @@ router.post("/audio", requireAuth, upload.single("audio"), async (req, res) => {
       `INSERT INTO session_detail
          (session_id, emotion_result, pauses_count, performance_summary,
           star_rating, progress_percentage, played_at)
-       VALUES ($1,$2,0,$3,$4,$5,NOW())`,
-      [session_id, band, `anxiety=${anxiety_pct.toFixed(1)}%`, stars, progress]
+       VALUES ($1,$2,$3,$4,$5,$6,NOW())`,
+      [
+        session_id,
+        band,
+        pausesCount ?? 0,
+        `anxiety=${anxiety_pct.toFixed(1)}% (nivel=${immersion_level_name})`,
+        stars,
+        progress
+      ]
     );
+
+    await query(`
+      INSERT INTO user_level_progress (
+        user_id, level_id, attempts, max_stars, max_progress, passed, date
+      )
+      VALUES ($1, $2, 1, $3, $4, $5, NOW())
+      ON CONFLICT (user_id, level_id)
+      DO UPDATE SET
+        attempts     = user_level_progress.attempts + 1,
+        max_stars    = GREATEST(user_level_progress.max_stars, EXCLUDED.max_stars),
+        max_progress = GREATEST(user_level_progress.max_progress, EXCLUDED.max_progress),
+        passed       = user_level_progress.passed OR EXCLUDED.passed,
+        date         = NOW()
+      `, [
+      user_id,
+      immersion_level_id,
+      stars,
+      progress,
+      stars == 3
+    ]);
+
+
+    const ures = await query(`SELECT current_level_id FROM "user" WHERE user_id=$1`, [user_id]);
+    const currentLevelDb = ures.rows[0]?.current_level_id ?? immersion_level_id;
+
+    const nextLevel = decideNextLevel(immersion_level_id, stars, anxiety_pct, currentLevelDb);
+
+    await query(
+      `UPDATE "user" SET current_level_id=$2 WHERE user_id=$1`,
+      [user_id, nextLevel]
+    );
+
 
     await query("COMMIT");
     await fs.unlink(req.file.path).catch(() => {});
@@ -205,7 +282,7 @@ router.post("/audio", requireAuth, upload.single("audio"), async (req, res) => {
     res.status(201).json({
       session_id,
       model: { anxiety_pct, band },
-      detail: { star_rating: stars, progress_percentage: progress },
+      detail: { star_rating: stars, progress_percentage: progress, pauses_count: pausesCount ?? 0},
     });
   } catch (e) {
     console.error("audio-session error at stage:", stage.v, e);
@@ -285,14 +362,26 @@ router.post('/eval/audio', upload.single('audio'), async (req, res) => {
         const data = await r.json();
         if (data?.status === 'done') {
           const payload = data.result || data;
-          anxiety_pct = Number(payload?.model?.anxiety_pct ?? payload?.anxiety_pct);
+          const rawAnxiety = payload?.model?.anxiety_pct ?? payload?.anxiety_pct;
+
+          if (rawAnxiety === null || typeof rawAnxiety === 'undefined') {
+            anxiety_pct = NaN;
+          } else {
+            anxiety_pct = Number(rawAnxiety);
+          }
           break;
         }
       }
-      if ((Date.now() - t0) > 10 * 60 * 1000) throw new Error('Timeout esperando resultado del modelo');
+      if ((Date.now() - t0) > 10 * 60 * 1000) {
+        throw new Error('Timeout esperando resultado del modelo');
+      }
       await new Promise(rs => setTimeout(rs, 2000));
     }
-    if (!Number.isFinite(anxiety_pct)) throw new Error('Modelo: respuesta sin anxiety_pct');
+
+    if (!Number.isFinite(anxiety_pct)) {
+      throw new Error('Modelo: respuesta sin anxiety_pct');
+    }
+
 
     stage.v = 'scoring';
     const band        = bandFromAnxiety(anxiety_pct);
