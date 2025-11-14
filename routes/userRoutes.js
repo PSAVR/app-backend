@@ -48,7 +48,6 @@ router.delete("/:userId", requireAuth, async (req, res) => {
       return res.status(400).json({ error: "userId inválido" });
     }
 
-    // Solo permitir que cada uno se elimine a sí mismo
     if (targetId !== Number(req.userId)) {
       return res.status(403).json({ error: "No autorizado" });
     }
@@ -56,7 +55,6 @@ router.delete("/:userId", requireAuth, async (req, res) => {
     stage.v = "begin";
     await query("BEGIN");
 
-    // 1️⃣ Eliminar detalles de sesiones del usuario
     stage.v = "del-session-detail";
     await query(
       `
@@ -68,21 +66,18 @@ router.delete("/:userId", requireAuth, async (req, res) => {
       [targetId]
     );
 
-    // 2️⃣ Eliminar sesiones del usuario
     stage.v = "del-session";
     await query(
       `DELETE FROM session WHERE user_id = $1`,
       [targetId]
     );
 
-    // 3️⃣ Eliminar progreso por nivel
     stage.v = "del-user-level-progress";
     await query(
       `DELETE FROM user_level_progress WHERE user_id = $1`,
       [targetId]
     );
 
-    // 4️⃣ Eliminar usuario
     stage.v = "del-user";
     await query(
       `DELETE FROM "user" WHERE user_id = $1`,
@@ -94,7 +89,7 @@ router.delete("/:userId", requireAuth, async (req, res) => {
 
     res.clearCookie?.("token", { path: "/", sameSite: "lax", secure: false });
 
-    return res.status(204).send(); // No Content
+    return res.status(204).send(); 
   } catch (e) {
     console.error("delete user error @", stage.v, e);
     try {
@@ -150,7 +145,6 @@ router.get('/:userId/history/level/:levelId', async (req, res) => {
     if (!userId || !levelId)
       return res.status(400).json({ error: 'userId y levelId requeridos' });
 
-    // Rango predeterminado → últimos 7 días
     const endDate = end || new Date().toISOString().slice(0, 10);
     const startDate =
       start ||
@@ -205,7 +199,6 @@ router.get('/:id/progress', requireAuth, async (req, res) => {
 
     const { rows } = await query(sql, [userId]);
 
-    // Para la UI: 0★→0%, 1★→33%, 2★→66%, 3★→100%
     const out = rows.map(r => {
       const ms = Math.max(0, Math.min(3, Number(r.max_stars || 0)));
       const panel_progress = Math.round((ms / 3) * 100);
@@ -215,7 +208,7 @@ router.get('/:id/progress', requireAuth, async (req, res) => {
         difficulty_order: r.difficulty_order,
         attempts: Number(r.attempts || 0),
         max_stars: ms,
-        max_progress: Number(r.max_progress || 0), // “qué tan cerca de 3★”
+        max_progress: Number(r.max_progress || 0), 
         passed: !!r.passed,
         panel_progress,
         last_update: r.last_update || null,
