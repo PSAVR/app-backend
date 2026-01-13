@@ -20,14 +20,28 @@ ffmpeg.setFfmpegPath(ffmpegPath);
 
 const app = express();
 const PORT = process.env.PORT || 4000;
-const ORIGIN = process.env.CORS_ORIGIN || "http://localhost:5500";
-const JWT_SECRET = process.env.JWT_SECRET || "dev-secret";
-const upload = multer({ dest: "uploads/" });
+
+const origins = (process.env.CORS_ORIGIN || "http://localhost:5500,http://127.0.0.1:5500")
+  .split(",")
+  .map(s => s.trim());
 
 app.use(cors({
-  origin: [ORIGIN, "http://127.0.0.1:5500"],
+  origin: function (origin, cb) {
+    if (!origin) return cb(null, true); // Postman / server-to-server
+    if (origins.includes(origin)) return cb(null, true);
+    return cb(new Error("Not allowed by CORS: " + origin));
+  },
   credentials: true,
 }));
+
+
+const JWT_SECRET = process.env.JWT_SECRET;
+if (!JWT_SECRET) {
+  throw new Error("JWT_SECRET no está definido");
+}
+
+const upload = multer({ dest: "uploads/" });
+
 app.use(express.json());
 app.use(cookieParser());
 
