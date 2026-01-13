@@ -4,12 +4,23 @@ import jwt from "jsonwebtoken";
 import nodemailer from "nodemailer";
 import { query } from "../db.js";
 import dotenv from "dotenv";
+import { requireAuth } from "../middleware/auth.js";
 
 dotenv.config();
 const router = express.Router();
 
 const JWT_SECRET = process.env.JWT_SECRET;
 const FRONT_URL  = process.env.FRONT_URL;
+
+const isProd = process.env.NODE_ENV === "production";
+
+const cookieOpts = {
+  httpOnly: true,
+  secure: isProd,                 
+  sameSite: isProd ? "none" : "lax",
+  path: "/",
+  maxAge: 7 * 24 * 60 * 60 * 1000
+};
 
 // --- Configurar el transporte de correo ---
 const transporter = nodemailer.createTransport({
@@ -19,19 +30,6 @@ const transporter = nodemailer.createTransport({
     pass: process.env.MAIL_PASS,
   },
 });
-
-function requireAuth(req, res, next) {
-  try {
-    const token =
-      req.cookies?.token || (req.headers.authorization || '').replace(/^Bearer\s+/, '');
-    if (!token) return res.status(401).json({ error: 'no token' });
-    const dec = jwt.verify(token, JWT_SECRET);
-    req.userId = dec.user_id; 
-    next();
-  } catch {
-    return res.status(401).json({ error: 'invalid token' });
-  }
-}
 
 // =============== LOGIN =====================
 router.post("/login", async (req, res) => {
@@ -44,14 +42,7 @@ router.post("/login", async (req, res) => {
   if (!ok) return res.status(401).json({ error: "Credenciales inválidas" });
 
   const token = jwt.sign({ user_id: user.user_id }, JWT_SECRET, { expiresIn: "7d" });
-    res.cookie("token", token, {
-    httpOnly: true,
-    sameSite: "lax",
-    secure: false,
-    path: "/",          // ensure sent to all routes
-    maxAge: 7 * 24 * 60 * 60 * 1000
-  });
-
+  res.cookie("token", token, cookieOpts);
   res.json({ user_id: user.user_id, email: user.email, username: user.username });
 });
 
@@ -77,9 +68,8 @@ router.post("/register", async (req, res) => {
   );
 
   const token = jwt.sign({ user_id: result.rows[0].user_id }, JWT_SECRET, { expiresIn: "7d" });
-  res
-    .cookie("token", token, { httpOnly: true, sameSite: "lax", secure: false })
-    .json(result.rows[0]);
+  res.cookie("token", token, cookieOpts);
+  res.json(result.rows[0]);
 });
 
 
@@ -111,7 +101,13 @@ router.get('/me', requireAuth, async (req, res) => {
 });
 
 router.post('/logout', (_req, res) => {
-  res.clearCookie('token', { httpOnly:true, sameSite:'lax', secure:false });
+  res.clearCookie("token", {
+    httpOnly: true,
+    secure: isProd,
+    sameSite: isProd ? "none" : "lax",
+    path: "/",
+  });
+
   res.json({ ok: true });
 });
 

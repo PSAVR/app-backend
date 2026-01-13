@@ -1,6 +1,5 @@
 import express from "express";
 import multer from "multer";
-import fetch from "node-fetch";
 import fss from "node:fs";
 import ffmpeg from "fluent-ffmpeg";
 import ffmpegPath from "ffmpeg-static";
@@ -20,6 +19,9 @@ const upload = multer({
 
 const MODEL_API_URL = process.env.MODEL_API_URL || "http://localhost:8080";
 const TZ = "America/Lima";
+
+const POLL_TIMEOUT_MS = Number(process.env.POLL_TIMEOUT_MS || (10 * 60 * 1000));
+const POLL_INTERVAL_MS = Number(process.env.POLL_INTERVAL_MS || 2000);
 
 function normalizeLevelName(name) {
   const n = (name || "").toLowerCase();
@@ -265,11 +267,12 @@ router.post("/audio", requireAuth, upload.single("audio"), async (req, res) => {
           break;
         }
       }
-      if (Date.now() - t0 > 10 * 60 * 1000) {
+      if (Date.now() - t0 > POLL_TIMEOUT_MS) {
+
         await cleanupTempFiles(...tempFiles);
         throw new Error("Timeout esperando resultado del modelo");
       }
-      await new Promise((r) => setTimeout(r, 2000));
+      await new Promise((r) => setTimeout(r, POLL_INTERVAL_MS));
     }
 
     if (!Number.isFinite(anxiety_pct)) {
@@ -616,7 +619,7 @@ router.post('/eval/audio', upload.single('audio'), async (req, res) => {
           break;
         }
       }
-      if ((Date.now() - t0) > 10 * 60 * 1000) {
+      if (Date.now() - t0 > POLL_TIMEOUT_MS) {
         await cleanupTempFiles(...tempFiles);
         throw new Error('Timeout esperando resultado del modelo');
       }
