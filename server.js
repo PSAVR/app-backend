@@ -25,22 +25,9 @@ const origins = (process.env.CORS_ORIGIN || "http://localhost:5500,http://127.0.
   .split(",")
   .map(s => s.trim());
 
-app.set("trust proxy", 1); 
-
-app.get("/debug/setcookie", (req, res) => {
-  res.cookie("debug_cookie", "1", {
-    httpOnly: true,
-    secure: true,
-    sameSite: "none",
-    path: "/",
-  });
-  res.json({ ok: true, note: "Sent debug_cookie=1" });
-});
-
-
 app.use(cors({
   origin: function (origin, cb) {
-    if (!origin) return cb(null, true); // Postman / server-to-server
+    if (!origin) return cb(null, true);
     if (origins.includes(origin)) return cb(null, true);
     return cb(new Error("Not allowed by CORS: " + origin));
   },
