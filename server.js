@@ -66,6 +66,22 @@ export function requireAuth(req, res, next) {
   next();
 }
 
+app.get("/debug/auth", (req, res) => {
+  res.json({
+    time: new Date().toISOString(),
+    origin: req.headers.origin || null,
+    referer: req.headers.referer || null,
+    host: req.headers.host || null,
+    userAgent: req.headers["user-agent"] || null,
+    hasCookieHeader: Boolean(req.headers.cookie),
+    cookieHeaderPreview: req.headers.cookie ? req.headers.cookie.slice(0, 160) : null,
+    hasAuthHeader: Boolean(req.headers.authorization),
+    authHeaderPreview: req.headers.authorization ? req.headers.authorization.slice(0, 80) : null,
+    parsedUserId: req.userId || null,
+    corsAllowedOrigins: origins,
+  });
+});
+
 
 app.use("/api/auth", authRoutes);
 app.use("/api/users", userRoutes);
