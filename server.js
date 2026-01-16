@@ -19,6 +19,7 @@ dotenv.config();
 ffmpeg.setFfmpegPath(ffmpegPath);
 
 const app = express();
+app.set("trust proxy", 1);
 const PORT = process.env.PORT || 4000;
 
 const origins = (process.env.CORS_ORIGIN || "http://localhost:5500,http://127.0.0.1:5500")
@@ -27,7 +28,7 @@ const origins = (process.env.CORS_ORIGIN || "http://localhost:5500,http://127.0.
 
 app.use(cors({
   origin: function (origin, cb) {
-    if (!origin) return cb(null, true);
+    if (!origin) return cb(null, true); 
     if (origins.includes(origin)) return cb(null, true);
     return cb(new Error("Not allowed by CORS: " + origin));
   },
@@ -40,47 +41,26 @@ if (!JWT_SECRET) {
   throw new Error("JWT_SECRET no está definido");
 }
 
-const upload = multer({ dest: "uploads/" });
-
 app.use(express.json());
 app.use(cookieParser());
+app.options("*", cors());
 
 
 app.use((req, _res, next) => {
-  let token = req.cookies?.token || null;
-  const auth = req.headers.authorization;
-  if (!token && auth?.startsWith("Bearer ")) token = auth.slice(7);
+  const auth = req.headers.authorization || "";
+  const bearer = auth.startsWith("Bearer ") ? auth.slice(7) : null;
+  const token = bearer || req.cookies?.token || null;
+
   if (token) {
     try {
       const payload = jwt.verify(token, JWT_SECRET);
       req.userId = payload.user_id || payload.uid || payload.userId;
     } catch {
-      console.warn("⚠️ Token inválido o expirado");
     }
   }
   next();
 });
 
-export function requireAuth(req, res, next) {
-  if (!req.userId) return res.status(401).json({ error: "no token" });
-  next();
-}
-
-app.get("/debug/auth", (req, res) => {
-  res.json({
-    time: new Date().toISOString(),
-    origin: req.headers.origin || null,
-    referer: req.headers.referer || null,
-    host: req.headers.host || null,
-    userAgent: req.headers["user-agent"] || null,
-    hasCookieHeader: Boolean(req.headers.cookie),
-    cookieHeaderPreview: req.headers.cookie ? req.headers.cookie.slice(0, 160) : null,
-    hasAuthHeader: Boolean(req.headers.authorization),
-    authHeaderPreview: req.headers.authorization ? req.headers.authorization.slice(0, 80) : null,
-    parsedUserId: req.userId || null,
-    corsAllowedOrigins: origins,
-  });
-});
 
 
 app.use("/api/auth", authRoutes);

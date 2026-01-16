@@ -6,7 +6,6 @@ import ffmpegPath from "ffmpeg-static";
 import fs from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
-import fetch from 'node-fetch';
 import FormData from "form-data";
 import { query } from "../db.js";
 import { requireAuth } from "../middleware/auth.js";
@@ -22,7 +21,7 @@ const MODEL_API_URL = process.env.MODEL_API_URL || "http://localhost:8080";
 const TZ = "America/Lima";
 
 const POLL_TIMEOUT_MS = Number(process.env.POLL_TIMEOUT_MS || (10 * 60 * 1000));
-const POLL_INTERVAL_MS = Number(process.env.POLL_INTERVAL_MS || 2000);
+const POLL_INTERVAL_MS = Number(process.env.POLL_INTERVAL_MS || 12000);
 
 function normalizeLevelName(name) {
   const n = (name || "").toLowerCase();
@@ -127,7 +126,10 @@ async function cleanupTempFiles(...files) {
 }
 
 router.post("/", requireAuth, async (req, res) => {
-  const user_id = Number(req.body.user_id || req.userId);
+  const user_id = Number(req.userId);
+  if (req.body.user_id && Number(req.body.user_id) !== user_id) {
+    return res.status(403).json({ error: "No autorizado" });
+  }
   const level_id = Number(req.body.level_id);
   const d = req.body.detail || {};
 
@@ -173,7 +175,10 @@ router.post("/audio", requireAuth, upload.single("audio"), async (req, res) => {
   let tempFiles = []; 
   
   try {
-    const user_id = Number(req.body.user_id || req.userId);
+    const user_id = Number(req.userId);
+    if (req.body.user_id && Number(req.body.user_id) !== user_id) {
+      return res.status(403).json({ error: "No autorizado" });
+    }
     let immersion_level_id = req.body.immersion_level_id ? Number(req.body.immersion_level_id) : null;
     let immersion_level_name = (req.body.immersion_level_name || "").trim();
 
@@ -525,12 +530,15 @@ router.post("/audio", requireAuth, upload.single("audio"), async (req, res) => {
   }
 });
 
-router.post('/eval/audio', upload.single('audio'), async (req, res) => {
+router.post('/eval/audio', requireAuth, upload.single('audio'), async (req, res) => {
   const stage = { v: 'start' };
   let tempFiles = [];
   
   try {
-    const user_id  = Number(req.body.user_id || req.userId);
+    const user_id  = Number(req.userId);
+    if (req.body.user_id && Number(req.body.user_id) !== user_id) {
+      return res.status(403).json({ error: "No autorizado" });
+    }
     let immersion_level_id   = req.body.immersion_level_id ? Number(req.body.immersion_level_id) : null;
     let immersion_level_name = (req.body.immersion_level_name || '').trim();
 
@@ -588,8 +596,7 @@ router.post('/eval/audio', upload.single('audio'), async (req, res) => {
 
     const enqueue = await fetch(`${MODEL_API_URL.replace(/\/$/, '')}/anxiety_async`, {
       method: 'POST',
-      body: fd,
-      headers: fd.getHeaders(),
+      body: fd
     });
     if (!enqueue.ok) {
       const body = await enqueue.text().catch(() => '');
@@ -625,7 +632,7 @@ router.post('/eval/audio', upload.single('audio'), async (req, res) => {
         await cleanupTempFiles(...tempFiles);
         throw new Error('Timeout esperando resultado del modelo');
       }
-      await new Promise(rs => setTimeout(rs, 2000));
+      await new Promise(rs => setTimeout(rs, POLL_INTERVAL_MS));
     }
 
     if (!Number.isFinite(anxiety_pct)) {

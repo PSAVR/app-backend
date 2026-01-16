@@ -17,10 +17,14 @@ const isProd = process.env.NODE_ENV === "production";
 const cookieOpts = {
   httpOnly: true,
   secure: true,                 
-  sameSite:"none",
+  sameSite: "none",
   path: "/",
   maxAge: 7 * 24 * 60 * 60 * 1000
 };
+
+function signToken(payload) {
+  return jwt.sign(payload, JWT_SECRET, { expiresIn: "2h" });
+}
 
 // --- Configurar el transporte de correo ---
 const transporter = nodemailer.createTransport({
@@ -43,7 +47,7 @@ router.post("/login", async (req, res) => {
 
   const token = jwt.sign({ user_id: user.user_id }, JWT_SECRET, { expiresIn: "7d" });
   res.cookie("token", token, cookieOpts);
-  res.json({ user_id: user.user_id, email: user.email, username: user.username });
+  res.json({ user_id: user.user_id, email: user.email, username: user.username, token });
 });
 
 // =============== REGISTRO ==================
@@ -58,18 +62,41 @@ router.post("/register", async (req, res) => {
     return res.status(409).json({ error: 'email o username ya registrados' });
   }
 
+  let finalCollegeId = college_id ?? null;
+  let finalCollegeText = college ?? null;
+
+  if (!finalCollegeId && finalCollegeText) {
+    const found = await query(
+      `SELECT college_id FROM college WHERE LOWER(college_name) = LOWER($1) LIMIT 1`,
+      [finalCollegeText.trim()]
+    );
+    if (found.rows.length) finalCollegeId = found.rows[0].college_id;
+  }
+
+  if (finalCollegeId) {
+    const c = await query(
+      `SELECT college_name FROM college WHERE college_id=$1 LIMIT 1`,
+      [finalCollegeId]
+    );
+    if (!c.rows.length) {
+      return res.status(400).json({ error: "college_id inválido" });
+    }
+    // normaliza el nombre
+    finalCollegeText = c.rows[0].college_name;
+  }
+
   const hash = await bcrypt.hash(password, 10);
 
   const result = await query(
     `INSERT INTO "user"(email,password,username,college,college_id,birthdate,gender)
      VALUES ($1,$2,$3,$4,$5,$6,$7)
      RETURNING user_id,email,username, created_at`,
-    [email, hash, username, college, college_id, birthdate, gender]
+    [email, hash, username, finalCollegeText, finalCollegeId, birthdate, gender]
   );
 
   const token = jwt.sign({ user_id: result.rows[0].user_id }, JWT_SECRET, { expiresIn: "7d" });
   res.cookie("token", token, cookieOpts);
-  res.json(result.rows[0]);
+  res.json({ ...result.rows[0], token });
 });
 
 
@@ -103,8 +130,8 @@ router.get('/me', requireAuth, async (req, res) => {
 router.post('/logout', (_req, res) => {
   res.clearCookie("token", {
     httpOnly: true,
-    secure: isProd,
-    sameSite: isProd ? "none" : "lax",
+    secure: true,
+    sameSite: "none",
     path: "/",
   });
 

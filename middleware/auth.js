@@ -9,9 +9,12 @@ if (!JWT_SECRET) {
 
 export function requireAuth(req, res, next) {
   try {
-    const token =
-      req.cookies?.token || (req.headers.authorization || "").replace(/^Bearer\s+/, "");
+    const auth = req.headers.authorization || "";
+    const bearer = auth.startsWith("Bearer ") ? auth.slice(7) : "";
+    const token = bearer || req.cookies?.token;
+
     if (!token) return res.status(401).json({ error: "no token" });
+
     const dec = jwt.verify(token, JWT_SECRET);
     req.userId = dec.user_id || dec.uid;
     next();
@@ -19,3 +22,4 @@ export function requireAuth(req, res, next) {
     return res.status(401).json({ error: "invalid token" });
   }
 }
+

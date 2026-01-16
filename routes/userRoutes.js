@@ -91,7 +91,7 @@ router.delete("/:userId", requireAuth, async (req, res) => {
     stage.v = "commit";
     await query("COMMIT");
 
-    res.clearCookie?.("token", { path: "/", sameSite: "lax", secure: false });
+    res.clearCookie?.("token", { path: "/", sameSite: "none", secure: true, httpOnly: true });
 
     return res.status(204).send(); 
   } catch (e) {
@@ -139,9 +139,11 @@ router.post("/me/assign-initial-level", requireAuth, async (req, res) => {
   }
 });
 
-router.get('/:userId/history/level/:levelId', async (req, res) => {
+router.get('/:userId/history/level/:levelId',requireAuth, async (req, res) => {
   try {
     const userId = Number(req.params.userId);
+    if (userId !== Number(req.userId)) return res.status(403).json({ error: "No autorizado" });
+
     const levelId = Number(req.params.levelId);
     const { start, end } = req.query;
     const tz = 'America/Lima';
@@ -183,6 +185,8 @@ router.get('/:userId/history/level/:levelId', async (req, res) => {
 router.get('/:id/progress', requireAuth, async (req, res) => {
   try {
     const userId = Number(req.params.id);
+    
+    if (userId !== Number(req.userId)) return res.status(403).json({ error: "No autorizado" });
 
     const sql = `
       SELECT
