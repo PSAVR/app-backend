@@ -43,7 +43,7 @@ if (!JWT_SECRET) {
 
 app.use(express.json());
 app.use(cookieParser());
-app.options("*", cors());
+app.options(/.*/, cors());
 
 
 app.use((req, _res, next) => {
