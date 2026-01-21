@@ -5,6 +5,7 @@ import ffmpeg from "fluent-ffmpeg";
 import ffmpegPath from "ffmpeg-static";
 import fs from "node:fs/promises";
 import path from "node:path";
+import fetch from 'node-fetch';
 import os from "node:os";
 import FormData from "form-data";
 import { query } from "../db.js";
@@ -596,7 +597,8 @@ router.post('/eval/audio', requireAuth, upload.single('audio'), async (req, res)
 
     const enqueue = await fetch(`${MODEL_API_URL.replace(/\/$/, '')}/anxiety_async`, {
       method: 'POST',
-      body: fd
+      body: fd,
+      headers: fd.getHeaders()
     });
     if (!enqueue.ok) {
       const body = await enqueue.text().catch(() => '');
