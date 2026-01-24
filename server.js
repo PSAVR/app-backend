@@ -26,14 +26,14 @@ const origins = (process.env.CORS_ORIGIN || "http://localhost:5500,http://127.0.
   .split(",")
   .map(s => s.trim());
 
-app.use(cors({
+const corsOptions = {
   origin: function (origin, cb) {
-    if (!origin) return cb(null, true); 
+    if (!origin) return cb(null, true);
     if (origins.includes(origin)) return cb(null, true);
     return cb(new Error("Not allowed by CORS: " + origin));
   },
   credentials: true,
-}));
+};
 
 
 const JWT_SECRET = process.env.JWT_SECRET;
@@ -43,7 +43,8 @@ if (!JWT_SECRET) {
 
 app.use(express.json());
 app.use(cookieParser());
-app.options(/.*/, cors());
+app.use(cors(corsOptions));
+app.options(/.*/, cors(corsOptions));
 
 
 app.use((req, _res, next) => {
