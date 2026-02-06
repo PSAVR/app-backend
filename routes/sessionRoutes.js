@@ -10,6 +10,8 @@ import os from "node:os";
 import FormData from "form-data";
 import { query } from "../db.js";
 import { requireAuth } from "../middleware/auth.js";
+import crypto from "node:crypto";
+
 
 ffmpeg.setFfmpegPath(ffmpegPath);
 const router = express.Router();
@@ -23,6 +25,42 @@ const TZ = "America/Lima";
 
 const POLL_TIMEOUT_MS = Number(process.env.POLL_TIMEOUT_MS || (10 * 60 * 1000));
 const POLL_INTERVAL_MS = Number(process.env.POLL_INTERVAL_MS || 12000);
+
+const SESSION_CTX_SECRET = process.env.SESSION_CTX_SECRET;
+
+function b64urlEncode(buf) {
+  return Buffer.from(buf)
+    .toString("base64")
+    .replace(/\+/g, "-")
+    .replace(/\//g, "_")
+    .replace(/=+$/g, "");
+}
+
+function b64urlDecode(str) {
+  const pad = str.length % 4 === 0 ? "" : "=".repeat(4 - (str.length % 4));
+  const s = (str + pad).replace(/-/g, "+").replace(/_/g, "/");
+  return Buffer.from(s, "base64");
+}
+
+function signCtx(payload) {
+  if (!SESSION_CTX_SECRET) throw new Error("Missing SESSION_CTX_SECRET");
+  const body = b64urlEncode(JSON.stringify(payload));
+  const sig = crypto.createHmac("sha256", SESSION_CTX_SECRET).update(body).digest();
+  return `${body}.${b64urlEncode(sig)}`;
+}
+
+function verifyCtx(token) {
+  if (!SESSION_CTX_SECRET) throw new Error("Missing SESSION_CTX_SECRET");
+  if (!token || typeof token !== "string" || !token.includes(".")) throw new Error("Bad ctx");
+  const [body, sig] = token.split(".");
+  const expected = crypto.createHmac("sha256", SESSION_CTX_SECRET).update(body).digest();
+  const provided = b64urlDecode(sig);
+  if (provided.length !== expected.length || !crypto.timingSafeEqual(provided, expected)) {
+    throw new Error("Invalid ctx signature");
+  }
+  return JSON.parse(b64urlDecode(body).toString("utf8"));
+}
+
 
 function normalizeLevelName(name) {
   const n = (name || "").toLowerCase();
@@ -125,6 +163,211 @@ async function cleanupTempFiles(...files) {
     }
   }
 }
+
+async function finalizeAudioSession({
+  user_id,
+  immersion_level_id,
+  immersion_level_name,
+  anxiety_pct,
+  pausesCount,
+  task_id,
+}) {
+  const band = bandFromAnxiety(anxiety_pct);
+  const stars = starsFromAnxietyByImmersion(immersion_level_name, anxiety_pct);
+  const progress = Math.round((stars / 3) * 100);
+
+  await query("BEGIN");
+
+  const todayKey = limaDateKey(new Date());
+  await query("SELECT pg_advisory_xact_lock($1,$2)", [user_id, lockKey2(immersion_level_id, todayKey)]);
+
+  const todayStart = new Date();
+  todayStart.setHours(0, 0, 0, 0);
+  const todayEnd = new Date();
+  todayEnd.setHours(23, 59, 59, 999);
+
+  const existingSessionResult = await query(
+    `SELECT s.session_id, sd.star_rating, sd.progress_percentage
+       FROM session s
+       INNER JOIN session_detail sd ON s.session_id = sd.session_id
+       WHERE s.user_id = $1 
+         AND s.level_id = $2
+         AND sd.played_at >= $3::timestamp AT TIME ZONE 'America/Lima'
+         AND sd.played_at < $4::timestamp AT TIME ZONE 'America/Lima'
+       ORDER BY sd.star_rating DESC, sd.progress_percentage DESC
+       LIMIT 1`,
+    [user_id, immersion_level_id, todayStart.toISOString(), todayEnd.toISOString()]
+  );
+
+  let session_id;
+  let shouldCreateNew = true;
+
+  const perfSummary = `anxiety=${anxiety_pct.toFixed(1)}% (nivel=${immersion_level_name});task_id=${task_id}`;
+
+  if (existingSessionResult.rows.length > 0) {
+    const existing = existingSessionResult.rows[0];
+    const existingStars = Number(existing.star_rating) || 0;
+    const existingProgress = Number(existing.progress_percentage) || 0;
+
+    console.log("Sesión existente hoy:", {
+      session_id: existing.session_id,
+      existingStars,
+      existingProgress,
+      newStars: stars,
+      newProgress: progress,
+    });
+
+    if (stars > existingStars || (stars === existingStars && progress > existingProgress)) {
+      console.log("Nueva sesión - actualizando...");
+      session_id = existing.session_id;
+      shouldCreateNew = false;
+
+      await query(
+        `UPDATE session_detail
+           SET emotion_result = $1,
+               pauses_count = $2,
+               performance_summary = $3,
+               star_rating = $4,
+               progress_percentage = $5,
+               played_at = NOW()
+           WHERE session_id = $6`,
+        [band, pausesCount ?? 0, perfSummary, stars, progress, session_id]
+      );
+    } else {
+      console.log("Descartando sesion actual");
+      session_id = existing.session_id;
+      shouldCreateNew = false;
+    }
+  }
+
+  if (shouldCreateNew) {
+    console.log("Creando nueva sesión para hoy");
+    const sres = await query(
+      `INSERT INTO session (user_id, level_id)
+         VALUES ($1,$2)
+         RETURNING session_id`,
+      [user_id, immersion_level_id]
+    );
+    session_id = sres.rows[0].session_id;
+
+    await query(
+      `INSERT INTO session_detail
+           (session_id, emotion_result, pauses_count, performance_summary,
+            star_rating, progress_percentage, played_at)
+         VALUES ($1,$2,$3,$4,$5,$6,NOW())`,
+      [session_id, band, pausesCount ?? 0, perfSummary, stars, progress]
+    );
+  }
+
+  const progressCheck = await query(
+    `SELECT max_stars, max_progress FROM user_level_progress 
+       WHERE user_id = $1 AND level_id = $2`,
+    [user_id, immersion_level_id]
+  );
+
+  let isNewBest = false;
+  if (progressCheck.rows.length === 0) {
+    isNewBest = true;
+  } else {
+    const currentMax = progressCheck.rows[0];
+    const currentMaxStars = Number(currentMax.max_stars) || 0;
+    const currentMaxProgress = Number(currentMax.max_progress) || 0;
+
+    isNewBest = stars > currentMaxStars || (stars === currentMaxStars && progress > currentMaxProgress);
+  }
+
+  console.log("Progress:", {
+    isNewBest,
+    currentStars: stars,
+    currentProgress: progress,
+    historicMax: progressCheck.rows[0] || "ninguno",
+  });
+
+  if (isNewBest) {
+    await query(
+      `
+        INSERT INTO user_level_progress (
+          user_id, level_id, attempts, max_stars, max_progress, passed, date
+        )
+        VALUES ($1, $2, 1, $3, $4, $5, NOW())
+        ON CONFLICT (user_id, level_id)
+        DO UPDATE SET
+          attempts     = user_level_progress.attempts + 1,
+          max_stars    = EXCLUDED.max_stars,
+          max_progress = EXCLUDED.max_progress,
+          passed       = user_level_progress.passed OR EXCLUDED.passed,
+          date         = NOW()
+      `,
+      [user_id, immersion_level_id, stars, progress, stars === 3]
+    );
+    console.log("Nuevo récord, fecha actualizada");
+  } else {
+    await query(
+      `
+        INSERT INTO user_level_progress (
+          user_id, level_id, attempts, max_stars, max_progress, passed, date
+        )
+        VALUES ($1, $2, 1, $3, $4, $5, NOW())
+        ON CONFLICT (user_id, level_id)
+        DO UPDATE SET
+          attempts = user_level_progress.attempts + 1
+      `,
+      [user_id, immersion_level_id, stars, progress, stars === 3]
+    );
+    console.log("No es récord");
+  }
+
+  const ures = await query(`SELECT current_level_id FROM "user" WHERE user_id=$1 FOR UPDATE`, [user_id]);
+
+  const currentLevelDb = ures.rows[0]?.current_level_id ?? immersion_level_id;
+
+  const nextLevel = decideNextLevel(immersion_level_id, stars, anxiety_pct, currentLevelDb);
+
+  console.log("LEVEL DECISION:", {
+    user_id,
+    immersion_level_id,
+    stars,
+    anxiety_pct: anxiety_pct.toFixed(2),
+    currentLevelDb,
+    nextLevel,
+    willUpdate: nextLevel !== currentLevelDb,
+  });
+
+  if (nextLevel !== currentLevelDb) {
+    const upd = await query(
+      `UPDATE "user" SET current_level_id = $2 WHERE user_id = $1 RETURNING user_id, current_level_id`,
+      [user_id, nextLevel]
+    );
+
+    console.log("LEVEL UPDATED:", {
+      rowCount: upd.rowCount,
+      newLevel: upd.rows[0]?.current_level_id,
+      success: upd.rowCount > 0,
+    });
+
+    if (upd.rowCount === 0) {
+      console.error("UPDATE falló - no se actualizó ninguna fila");
+    }
+  } else {
+    console.log("LEVEL UNCHANGED - no se requiere actualización");
+  }
+
+  await query("COMMIT");
+  console.log("COMMIT exitoso");
+
+  return {
+    session_id,
+    model: { anxiety_pct, band },
+    detail: {
+      star_rating: stars,
+      progress_percentage: progress,
+      pauses_count: pausesCount ?? 0,
+      level_updated: nextLevel !== currentLevelDb,
+      new_level: nextLevel,
+    },
+  };
+}
+
 
 router.post("/", requireAuth, async (req, res) => {
   const user_id = Number(req.userId);
@@ -531,6 +774,396 @@ router.post("/audio", requireAuth, upload.single("audio"), async (req, res) => {
   }
 });
 
+router.post("/audio_async", requireAuth, upload.single("audio"), async (req, res) => {
+  const stage = { v: "start" };
+  let tempFiles = [];
+
+  try {
+    const user_id = Number(req.userId);
+    if (req.body.user_id && Number(req.body.user_id) !== user_id) {
+      return res.status(403).json({ error: "No autorizado" });
+    }
+
+    let immersion_level_id = req.body.immersion_level_id ? Number(req.body.immersion_level_id) : null;
+    let immersion_level_name = (req.body.immersion_level_name || "").trim();
+
+    if (!user_id || !req.file)
+      return res.status(400).json({ error: "user_id y audio son requeridos" });
+
+    tempFiles.push(req.file.path);
+
+    if (!immersion_level_id && immersion_level_name) {
+      const r = await query(
+        `SELECT level_id, name FROM level WHERE LOWER(name)=LOWER($1) LIMIT 1`,
+        [immersion_level_name]
+      );
+      if (!r.rows.length) {
+        await cleanupTempFiles(...tempFiles);
+        return res.status(422).json({ error: "Nivel de inmersión no válido" });
+      }
+      immersion_level_id = r.rows[0].level_id;
+      immersion_level_name = r.rows[0].name;
+    }
+
+    stage.v = "ffmpeg";
+    const inFile = req.file.path;
+    const wavFile = path.join(os.tmpdir(), `${path.basename(inFile)}.wav`);
+    tempFiles.push(wavFile);
+
+    await new Promise((resolve, reject) => {
+      ffmpeg(inFile)
+        .audioChannels(1)
+        .audioFrequency(16000)
+        .toFormat("wav")
+        .on("end", resolve)
+        .on("error", reject)
+        .save(wavFile);
+    });
+
+    stage.v = "model-enqueue";
+    const fd = new FormData();
+    fd.append("file", fss.createReadStream(wavFile), {
+      filename: "audio.wav",
+      contentType: "audio/wav",
+    });
+    fd.append("user_id", String(user_id));
+
+    const enqueue = await fetch(`${MODEL_API_URL.replace(/\/$/, "")}/anxiety_async`, {
+      method: "POST",
+      body: fd,
+      headers: fd.getHeaders(),
+    });
+
+    if (!enqueue.ok) {
+      await cleanupTempFiles(...tempFiles);
+      throw new Error(`Modelo enqueue fallo: ${enqueue.status}`);
+    }
+
+    const { task_id } = await enqueue.json();
+    if (!task_id) {
+      await cleanupTempFiles(...tempFiles);
+      throw new Error("Modelo: no entregó task_id");
+    }
+
+    const ctx = signCtx({
+      v: 1,
+       mode: "audio",
+      user_id,
+      immersion_level_id,
+      immersion_level_name,
+      iat: Date.now(),
+    });
+
+    await cleanupTempFiles(...tempFiles);
+    return res.status(202).json({ task_id, ctx });
+  } catch (e) {
+    console.error("audio_async error at stage:", stage.v, e);
+    await cleanupTempFiles(...tempFiles);
+    return res.status(500).json({
+      error: "Fallo en servidor",
+      stage: stage.v,
+      message: String(e?.message || e),
+    });
+  }
+});
+
+router.get("/audio_result/:task_id", requireAuth, async (req, res) => {
+  const stage = { v: "start" };
+
+  try {
+    const user_id = Number(req.userId);
+    const task_id = String(req.params.task_id || "").trim();
+
+    const ctxToken = (req.query.ctx || req.headers["x-session-ctx"] || "").toString();
+    if (!task_id) return res.status(400).json({ error: "task_id requerido" });
+    if (!ctxToken) return res.status(400).json({ error: "ctx requerido" });
+
+    stage.v = "verify-ctx";
+    const ctx = verifyCtx(ctxToken);
+    if (ctx?.mode !== "audio") return res.status(400).json({ error: "ctx inválido (mode)" });
+    if (Number(ctx.user_id) !== user_id) return res.status(403).json({ error: "No autorizado" });
+
+    // Dedupe: if already saved for this task_id, return existing
+    stage.v = "dedupe-check";
+    const existing = await query(
+      `SELECT s.session_id, sd.emotion_result, sd.pauses_count, sd.star_rating, sd.progress_percentage, sd.performance_summary
+         FROM session s
+         INNER JOIN session_detail sd ON s.session_id = sd.session_id
+        WHERE s.user_id = $1
+          AND sd.performance_summary ILIKE $2
+        LIMIT 1`,
+      [user_id, `%task_id=${task_id}%`]
+    );
+
+    if (existing.rows.length) {
+      const row = existing.rows[0];
+      return res.status(200).json({
+        status: "done",
+        deduped: true,
+        session_id: row.session_id,
+        model: {
+          anxiety_pct: null, // optional: parse from performance_summary if you want
+          band: row.emotion_result ?? null,
+        },
+        detail: {
+          star_rating: Number(row.star_rating) || 0,
+          progress_percentage: Number(row.progress_percentage) || 0,
+          pauses_count: Number(row.pauses_count) || 0,
+          level_updated: false,
+          new_level: null,
+        },
+      });
+    }
+
+    stage.v = "model-fetch";
+    const r = await fetch(`${MODEL_API_URL.replace(/\/$/, "")}/result/${encodeURIComponent(task_id)}`, { method: "GET" });
+    if (!r.ok) {
+      const body = await r.text().catch(() => "");
+      return res.status(502).json({ error: `Modelo result fallo: ${r.status}`, body: body.slice(0, 200) });
+    }
+
+    const data = await r.json();
+    const status = data?.status || "pending";
+
+    if (status !== "done") {
+      return res.status(200).json({ status });
+    }
+
+    stage.v = "parse-result";
+    const payload = data.result || data;
+    const model = payload.model || payload;
+
+    const rawAnxiety = model?.anxiety_pct ?? payload?.anxiety_pct;
+    const rawPauses = model?.pause_count ?? model?.pauses_count;
+
+    const anxiety_pct =
+      rawAnxiety === null || typeof rawAnxiety === "undefined" ? NaN : Number(rawAnxiety);
+
+    let pausesCount = 0;
+    if (rawPauses !== null && typeof rawPauses !== "undefined") {
+      const n = Number(rawPauses);
+      if (Number.isFinite(n) && n >= 0) pausesCount = Math.round(n);
+    }
+
+    // No-voice: do not save session
+    if (!Number.isFinite(anxiety_pct)) {
+      return res.status(200).json({
+        status: "done",
+        model: { anxiety_pct: null, band: null, immersion_level: ctx.immersion_level_name },
+        detail: {
+          star_rating: 0,
+          progress_percentage: 0,
+          pauses_count: 0,
+          no_voice_detected: true,
+        },
+        error: "No se detectó ninguna voz",
+      });
+    }
+
+    stage.v = "db-transaction";
+    const saved = await finalizeAudioSession({
+      user_id,
+      immersion_level_id: Number(ctx.immersion_level_id),
+      immersion_level_name: String(ctx.immersion_level_name),
+      anxiety_pct,
+      pausesCount,
+      task_id,
+    });
+
+    return res.status(200).json({ status: "done", ...saved });
+  } catch (e) {
+    console.error("audio_result error at stage:", stage.v, e);
+    try {
+      await query("ROLLBACK");
+    } catch {}
+    return res.status(500).json({
+      error: "Fallo en servidor",
+      stage: stage.v,
+      message: String(e?.message || e),
+    });
+  }
+});
+
+// ===== NEW: POST /eval/audio_async =====
+router.post("/eval/audio_async", requireAuth, upload.single("audio"), async (req, res) => {
+  const stage = { v: "start" };
+  let tempFiles = [];
+
+  try {
+    const user_id = Number(req.userId);
+    if (req.body.user_id && Number(req.body.user_id) !== user_id) {
+      return res.status(403).json({ error: "No autorizado" });
+    }
+
+    let immersion_level_id = req.body.immersion_level_id ? Number(req.body.immersion_level_id) : null;
+    let immersion_level_name = (req.body.immersion_level_name || "").trim();
+
+    if (!user_id || !req.file) {
+      return res.status(400).json({ error: "user_id y audio son requeridos" });
+    }
+
+    tempFiles.push(req.file.path);
+
+    if (!immersion_level_id && !immersion_level_name) {
+      immersion_level_id = req.body.level_id ? Number(req.body.level_id) : null;
+    }
+    if (!immersion_level_id && !immersion_level_name) {
+      await cleanupTempFiles(...tempFiles);
+      return res.status(400).json({ error: "Nivel de inmersión requerido" });
+    }
+
+    stage.v = "validate-level";
+    if (immersion_level_name) {
+      const r = await query(`SELECT level_id, name FROM level WHERE LOWER(name)=LOWER($1) LIMIT 1`, [
+        immersion_level_name,
+      ]);
+      if (!r.rows.length) {
+        await cleanupTempFiles(...tempFiles);
+        return res.status(422).json({ error: "Nivel de inmersión no válido (name)" });
+      }
+      immersion_level_id = r.rows[0].level_id;
+      immersion_level_name = r.rows[0].name;
+    } else {
+      const r = await query(`SELECT name FROM level WHERE level_id=$1`, [immersion_level_id]);
+      if (!r.rows.length) {
+        await cleanupTempFiles(...tempFiles);
+        return res.status(422).json({ error: "Nivel de inmersión no válido (id)" });
+      }
+      immersion_level_name = r.rows[0].name;
+    }
+
+    stage.v = "ffmpeg";
+    const inFile = req.file.path;
+    const wavFile = path.join(os.tmpdir(), `${path.basename(inFile)}.wav`);
+    tempFiles.push(wavFile);
+
+    await new Promise((resolve, reject) => {
+      ffmpeg(inFile)
+        .audioChannels(1)
+        .audioFrequency(16000)
+        .toFormat("wav")
+        .on("error", reject)
+        .on("end", resolve)
+        .save(wavFile);
+    });
+
+    stage.v = "model-enqueue";
+    const fd = new FormData();
+    fd.append("file", fss.createReadStream(wavFile), { filename: "audio.wav", contentType: "audio/wav" });
+    fd.append("user_id", String(user_id));
+
+    const enqueue = await fetch(`${MODEL_API_URL.replace(/\/$/, "")}/anxiety_async`, {
+      method: "POST",
+      body: fd,
+      headers: fd.getHeaders(),
+    });
+
+    if (!enqueue.ok) {
+      const body = await enqueue.text().catch(() => "");
+      await cleanupTempFiles(...tempFiles);
+      throw new Error(`Modelo enqueue fallo: ${enqueue.status} ${body.slice(0, 200)}`);
+    }
+
+    const { task_id } = await enqueue.json();
+    if (!task_id) {
+      await cleanupTempFiles(...tempFiles);
+      return res.status(502).json({ error: "Modelo: no entregó task_id" });
+    }
+
+    const ctx = signCtx({
+      v: 1,
+      mode: "eval",
+      user_id,
+      immersion_level_id,
+      immersion_level_name,
+      iat: Date.now(),
+    });
+
+    await cleanupTempFiles(...tempFiles);
+    return res.status(202).json({ task_id, ctx });
+  } catch (e) {
+    console.error("eval/audio_async error at stage:", stage.v, e);
+    await cleanupTempFiles(...tempFiles);
+    return res.status(500).json({
+      error: "Fallo en servidor",
+      stage: stage.v,
+      message: String(e?.message || e),
+    });
+  }
+});
+
+// ===== NEW: GET /eval/result/:task_id =====
+router.get("/eval/result/:task_id", requireAuth, async (req, res) => {
+  const stage = { v: "start" };
+
+  try {
+    const user_id = Number(req.userId);
+    const task_id = String(req.params.task_id || "").trim();
+    const ctxToken = (req.query.ctx || req.headers["x-session-ctx"] || "").toString();
+
+    if (!task_id) return res.status(400).json({ error: "task_id requerido" });
+    if (!ctxToken) return res.status(400).json({ error: "ctx requerido" });
+
+    stage.v = "verify-ctx";
+    const ctx = verifyCtx(ctxToken);
+    if (ctx?.mode !== "eval") return res.status(400).json({ error: "ctx inválido (mode)" });
+    if (Number(ctx.user_id) !== user_id) return res.status(403).json({ error: "No autorizado" });
+
+    stage.v = "model-fetch";
+    const r = await fetch(`${MODEL_API_URL.replace(/\/$/, "")}/result/${encodeURIComponent(task_id)}`, { method: "GET" });
+    if (!r.ok) {
+      const body = await r.text().catch(() => "");
+      return res.status(502).json({ error: `Modelo result fallo: ${r.status}`, body: body.slice(0, 200) });
+    }
+
+    const data = await r.json();
+    const status = data?.status || "pending";
+
+    if (status !== "done") return res.status(200).json({ status });
+
+    stage.v = "parse-result";
+    const payload = data.result || data;
+    const model = payload.model || payload;
+
+    const rawAnxiety = model?.anxiety_pct ?? payload?.anxiety_pct;
+    const anxiety_pct =
+      rawAnxiety === null || typeof rawAnxiety === "undefined" ? NaN : Number(rawAnxiety);
+
+    if (!Number.isFinite(anxiety_pct)) {
+      console.warn("⚠️ No se detectó voz válida en el audio (eval async)");
+      return res.status(200).json({
+        status: "done",
+        model: { anxiety_pct: null, band: null, immersion_level: ctx.immersion_level_name },
+        detail: {
+          star_rating: 0,
+          progress_percentage: 0,
+          no_voice_detected: true,
+        },
+        error: "No se detectó ninguna voz",
+      });
+    }
+
+    stage.v = "scoring";
+    const band = bandFromAnxiety(anxiety_pct);
+    const star_rating = starsFromAnxietyByImmersion(ctx.immersion_level_name, anxiety_pct);
+    const progress_internal = Math.max(0, Math.min(100, 100 - anxiety_pct));
+
+    return res.status(200).json({
+      status: "done",
+      model: { anxiety_pct, band, immersion_level: ctx.immersion_level_name },
+      detail: { star_rating, progress_percentage: progress_internal },
+    });
+  } catch (e) {
+    console.error("eval/result error at stage:", stage.v, e);
+    return res.status(500).json({
+      error: "Fallo en servidor",
+      stage: stage.v,
+      message: String(e?.message || e),
+    });
+  }
+});
+
+
 router.post('/eval/audio', requireAuth, upload.single('audio'), async (req, res) => {
   const stage = { v: 'start' };
   let tempFiles = [];
@@ -673,5 +1306,7 @@ router.post('/eval/audio', requireAuth, upload.single('audio'), async (req, res)
     });
   }
 });
+
+
 
 export default router;
