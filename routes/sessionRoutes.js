@@ -456,6 +456,11 @@ router.post("/audio", requireAuth, upload.single("audio"), async (req, res) => {
         .audioChannels(1)
         .audioFrequency(16000)
         .audioCodec("flac")
+        .outputOptions([
+          "-compression_level", "0", 
+          "-vn",                   
+          "-map_metadata", "-1"   
+        ])
         .toFormat("flac")
         .on("end", resolve)
         .on("error", reject)
@@ -817,6 +822,11 @@ router.post("/audio_async", requireAuth, upload.single("audio"), async (req, res
         .audioChannels(1)
         .audioFrequency(16000)
         .audioCodec("flac")
+        .outputOptions([
+          "-compression_level", "0", 
+          "-vn",                   
+          "-map_metadata", "-1"   
+        ])
         .toFormat("flac")
         .on("end", resolve)
         .on("error", reject)
@@ -1045,6 +1055,11 @@ router.post("/eval/audio_async", requireAuth, upload.single("audio"), async (req
         .audioChannels(1)
         .audioFrequency(16000)
         .audioCodec("flac")
+        .outputOptions([
+          "-compression_level", "0", 
+          "-vn",                   
+          "-map_metadata", "-1"   
+        ])
         .toFormat("flac")
         .on("end", resolve)
         .on("error", reject)
@@ -1225,6 +1240,11 @@ router.post('/eval/audio', requireAuth, upload.single('audio'), async (req, res)
         .audioChannels(1)
         .audioFrequency(16000)
         .audioCodec("flac")
+        .outputOptions([
+          "-compression_level", "0", 
+          "-vn",                   
+          "-map_metadata", "-1"   
+        ])
         .toFormat("flac")
         .on("end", resolve)
         .on("error", reject)
