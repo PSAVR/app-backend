@@ -444,35 +444,37 @@ router.post("/audio", requireAuth, upload.single("audio"), async (req, res) => {
       immersion_level_name = r.rows[0].name;
     }
 
-    // Convertir a WAV
+    // Convertir a flac
     stage.v = "ffmpeg";
     const inFile = req.file.path;
-    const wavFile = path.join(os.tmpdir(), `${path.basename(inFile)}.wav`);
-    tempFiles.push(wavFile);
-
+    
+    const flacFile = path.join(os.tmpdir(), `${path.basename(inFile)}.flac`);
+    tempFiles.push(flacFile);
+    
     await new Promise((resolve, reject) => {
       ffmpeg(inFile)
         .audioChannels(1)
         .audioFrequency(16000)
-        .toFormat("wav")
+        .audioCodec("flac")
+        .toFormat("flac")
         .on("end", resolve)
         .on("error", reject)
-        .save(wavFile);
+        .save(flacFile);
     });
 
     // Enviar al modelo
     stage.v = "model-enqueue";
     const fd = new FormData();
-    fd.append("file", fss.createReadStream(wavFile), {
-      filename: "audio.wav",
-      contentType: "audio/wav",
+    fd.append("file", fss.createReadStream(flacFile), {
+      filename: "audio.flac",
+      contentType: "audio/flac",
     });
     fd.append("user_id", String(user_id));
-
-    const enqueue = await fetch(`${MODEL_API_URL}/anxiety_async`, { 
-      method: "POST", 
-      body: fd, 
-      headers: fd.getHeaders() 
+    
+    const enqueue = await fetch(`${MODEL_API_URL.replace(/\/$/, "")}/anxiety_async`, {
+      method: "POST",
+      body: fd,
+      headers: fd.getHeaders(),
     });
     
     if (!enqueue.ok) {
@@ -807,24 +809,25 @@ router.post("/audio_async", requireAuth, upload.single("audio"), async (req, res
 
     stage.v = "ffmpeg";
     const inFile = req.file.path;
-    const wavFile = path.join(os.tmpdir(), `${path.basename(inFile)}.wav`);
-    tempFiles.push(wavFile);
-
+    const flacFile = path.join(os.tmpdir(), `${path.basename(inFile)}.flac`);
+    tempFiles.push(flacFile);
+    
     await new Promise((resolve, reject) => {
       ffmpeg(inFile)
         .audioChannels(1)
         .audioFrequency(16000)
-        .toFormat("wav")
+        .audioCodec("flac")
+        .toFormat("flac")
         .on("end", resolve)
         .on("error", reject)
-        .save(wavFile);
+        .save(flacFile);
     });
 
     stage.v = "model-enqueue";
     const fd = new FormData();
-    fd.append("file", fss.createReadStream(wavFile), {
-      filename: "audio.wav",
-      contentType: "audio/wav",
+    fd.append("file", fss.createReadStream(flacFile), {
+      filename: "audio.flac",
+      contentType: "audio/flac",
     });
     fd.append("user_id", String(user_id));
 
@@ -1034,22 +1037,26 @@ router.post("/eval/audio_async", requireAuth, upload.single("audio"), async (req
 
     stage.v = "ffmpeg";
     const inFile = req.file.path;
-    const wavFile = path.join(os.tmpdir(), `${path.basename(inFile)}.wav`);
-    tempFiles.push(wavFile);
-
+    const flacFile = path.join(os.tmpdir(), `${path.basename(inFile)}.flac`);
+    tempFiles.push(flacFile);
+    
     await new Promise((resolve, reject) => {
       ffmpeg(inFile)
         .audioChannels(1)
         .audioFrequency(16000)
-        .toFormat("wav")
-        .on("error", reject)
+        .audioCodec("flac")
+        .toFormat("flac")
         .on("end", resolve)
-        .save(wavFile);
+        .on("error", reject)
+        .save(flacFile);
     });
 
     stage.v = "model-enqueue";
     const fd = new FormData();
-    fd.append("file", fss.createReadStream(wavFile), { filename: "audio.wav", contentType: "audio/wav" });
+    fd.append("file", fss.createReadStream(flacFile), {
+      filename: "audio.flac",
+      contentType: "audio/flac",
+    });
     fd.append("user_id", String(user_id));
 
     const enqueue = await fetch(`${MODEL_API_URL.replace(/\/$/, "")}/anxiety_async`, {
@@ -1210,23 +1217,27 @@ router.post('/eval/audio', requireAuth, upload.single('audio'), async (req, res)
 
     stage.v = 'ffmpeg';
     const inFile  = req.file.path;
-    const wavFile = path.join(os.tmpdir(), `${path.basename(inFile)}.wav`);
-    tempFiles.push(wavFile);
+    const flacFile = path.join(os.tmpdir(), `${path.basename(inFile)}.flac`);
+    tempFiles.push(flacFile);
     
     await new Promise((resolve, reject) => {
-      ffmpeg(inFile).audioChannels(1).audioFrequency(16000).toFormat('wav')
-        .on('error', reject)
-        .on('end', resolve)
-        .save(wavFile);
+      ffmpeg(inFile)
+        .audioChannels(1)
+        .audioFrequency(16000)
+        .audioCodec("flac")
+        .toFormat("flac")
+        .on("end", resolve)
+        .on("error", reject)
+        .save(flacFile);
     });
 
     stage.v = 'model-enqueue';
     const fd = new FormData();
-    fd.append('file', fss.createReadStream(wavFile), {
-      filename: 'audio.wav',
-      contentType: 'audio/wav',
+    fd.append("file", fss.createReadStream(flacFile), {
+      filename: "audio.flac",
+      contentType: "audio/flac",
     });
-    fd.append('user_id', String(user_id));
+    fd.append("user_id", String(user_id));
 
     const enqueue = await fetch(`${MODEL_API_URL.replace(/\/$/, '')}/anxiety_async`, {
       method: 'POST',
