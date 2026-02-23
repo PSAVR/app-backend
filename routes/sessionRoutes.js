@@ -960,16 +960,26 @@ router.get("/audio_result/:task_id", requireAuth, async (req, res) => {
 
     // No-voice: do not save session
     if (!Number.isFinite(anxiety_pct)) {
+      const silenceSeconds = model?.silence_seconds ?? null;
+      const silencioExcesivo = silenceSeconds !== null && Number(silenceSeconds) >= 30;
       return res.status(200).json({
         status: "done",
-        model: { anxiety_pct: null, band: null, immersion_level: ctx.immersion_level_name },
+        model: { 
+          anxiety_pct: null, 
+          band: null, 
+          immersion_level: ctx.immersion_level_name,
+          silence_seconds: silenceSeconds 
+        },
         detail: {
           star_rating: 0,
           progress_percentage: 0,
           pauses_count: 0,
-          no_voice_detected: true,
+          no_voice_detected: !silencioExcesivo,
+          silence_disqualified: silencioExcesivo,
         },
-        error: "No se detectó ninguna voz",
+        error: silencioExcesivo 
+          ? "Audio descalificado por silencio excesivo" 
+          : "No se detectó ninguna voz",
       });
     }
 
@@ -1152,16 +1162,26 @@ router.get("/eval/result/:task_id", requireAuth, async (req, res) => {
       rawAnxiety === null || typeof rawAnxiety === "undefined" ? NaN : Number(rawAnxiety);
 
     if (!Number.isFinite(anxiety_pct)) {
-      console.warn("⚠️ No se detectó voz válida en el audio (eval async)");
+      const silenceSeconds = model?.silence_seconds ?? null;
+      const silencioExcesivo = silenceSeconds !== null && Number(silenceSeconds) >= 30;
       return res.status(200).json({
         status: "done",
-        model: { anxiety_pct: null, band: null, immersion_level: ctx.immersion_level_name },
+        model: { 
+          anxiety_pct: null, 
+          band: null, 
+          immersion_level: ctx.immersion_level_name,
+          silence_seconds: silenceSeconds 
+        },
         detail: {
           star_rating: 0,
           progress_percentage: 0,
-          no_voice_detected: true,
+          pauses_count: 0,
+          no_voice_detected: !silencioExcesivo,
+          silence_disqualified: silencioExcesivo,
         },
-        error: "No se detectó ninguna voz",
+        error: silencioExcesivo 
+          ? "Audio descalificado por silencio excesivo" 
+          : "No se detectó ninguna voz",
       });
     }
 
@@ -1302,16 +1322,26 @@ router.post('/eval/audio', requireAuth, upload.single('audio'), async (req, res)
     }
 
     if (!Number.isFinite(anxiety_pct)) {
-      await cleanupTempFiles(...tempFiles);
-      console.warn('⚠️ No se detectó voz válida en el audio (eval)');
+      const silenceSeconds = model?.silence_seconds ?? null;
+      const silencioExcesivo = silenceSeconds !== null && Number(silenceSeconds) >= 30;
       return res.status(200).json({
-        model: { anxiety_pct: null, band: null, immersion_level: immersion_level_name },
-        detail: { 
-          star_rating: 0, 
-          progress_percentage: 0,
-          no_voice_detected: true
+        status: "done",
+        model: { 
+          anxiety_pct: null, 
+          band: null, 
+          immersion_level: ctx.immersion_level_name,
+          silence_seconds: silenceSeconds 
         },
-        error: 'No se detectó ninguna voz'
+        detail: {
+          star_rating: 0,
+          progress_percentage: 0,
+          pauses_count: 0,
+          no_voice_detected: !silencioExcesivo,
+          silence_disqualified: silencioExcesivo,
+        },
+        error: silencioExcesivo 
+          ? "Audio descalificado por silencio excesivo" 
+          : "No se detectó ninguna voz",
       });
     }
 
