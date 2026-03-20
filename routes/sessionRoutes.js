@@ -1449,5 +1449,23 @@ router.get("/users/:userId/sessions/level/:levelId/today", requireAuth, async (r
   }
 });
 
+router.get("/debug/redis/:userId/:levelId", requireAuth, async (req, res) => {
+  try {
+    const user_id  = Number(req.params.userId);
+    const level_id = Number(req.params.levelId);
+    const redisKey = redisDailyKey(user_id, level_id);
+    const items    = await redis.lrange(redisKey, 0, -1);
+    const ttl      = await redis.ttl(redisKey);
+    return res.json({
+      key: redisKey,
+      ttl_seconds: ttl,
+      count: items.length,
+      sessions: items.map(i => JSON.parse(i))
+    });
+  } catch (e) {
+    return res.status(500).json({ error: String(e.message) });
+  }
+});
+
 
 export default router;
