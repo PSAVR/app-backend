@@ -9,6 +9,7 @@ import fetch from 'node-fetch';
 import os from "node:os";
 import FormData from "form-data";
 import { query } from "../db.js";
+import { redis } from "../redisClient.js";
 import { requireAuth } from "../middleware/auth.js";
 import crypto from "node:crypto";
 
@@ -146,6 +147,22 @@ function limaDateKey(d = new Date()) {
   });
   const p = fmt.formatToParts(d).reduce((a, x) => ((a[x.type] = x.value), a), {});
   return Number(`${p.year}${p.month}${p.day}`);
+}
+
+function redisDailyKey(user_id, level_id) {
+  const d = new Date();
+  const fmt = new Intl.DateTimeFormat("en-CA", {
+    timeZone: TZ, year: "numeric", month: "2-digit", day: "2-digit",
+  });
+  const date = fmt.format(d); // YYYY-MM-DD
+  return `daily:${user_id}:${level_id}:${date}`;
+}
+
+function secondsUntilMidnightLima() {
+  const nowLima = new Date(new Date().toLocaleString("en-US", { timeZone: TZ }));
+  const midnight = new Date(nowLima);
+  midnight.setHours(24, 0, 0, 0);
+  return Math.max(60, Math.floor((midnight - nowLima) / 1000));
 }
 
 function lockKey2(levelId, yyyymmdd) {
@@ -354,6 +371,24 @@ async function finalizeAudioSession({
 
   await query("COMMIT");
   console.log("COMMIT exitoso");
+
+  // Guardar sesión en Redis para el gráfico de hoy (TTL hasta medianoche Lima)
+  try {
+    const redisKey = redisDailyKey(user_id, immersion_level_id);
+    const sessionData = JSON.stringify({
+      anxiety_pct,
+      star_rating: stars,
+      pauses_count: pausesCount ?? 0,
+      emotion_result: band,
+      played_at: new Date().toISOString(),
+    });
+    const ttl = secondsUntilMidnightLima();
+    await redis.rpush(redisKey, sessionData);
+    await redis.expire(redisKey, ttl);
+    console.log(`Redis: sesión guardada en ${redisKey} (TTL ${ttl}s)`);
+  } catch (redisErr) {
+    console.error("Redis RPUSH error (no crítico):", redisErr);
+  }
 
   return {
     session_id,
@@ -746,6 +781,24 @@ router.post("/audio", requireAuth, upload.single("audio"), async (req, res) => {
 
     await query("COMMIT");
     console.log('COMMIT exitoso');
+
+    // Guardar sesión en Redis para el gráfico de hoy (TTL hasta medianoche Lima)
+    try {
+      const redisKey = redisDailyKey(user_id, immersion_level_id);
+      const sessionData = JSON.stringify({
+        anxiety_pct,
+        star_rating: stars,
+        pauses_count: pausesCount ?? 0,
+        emotion_result: band,
+        played_at: new Date().toISOString(),
+      });
+      const ttl = secondsUntilMidnightLima();
+      await redis.rpush(redisKey, sessionData);
+      await redis.expire(redisKey, ttl);
+      console.log(`Redis: sesión guardada en ${redisKey} (TTL ${ttl}s)`);
+    } catch (redisErr) {
+      console.error("Redis RPUSH error (no crítico):", redisErr);
+    }
 
     // Limpiar archivos temporales
     await cleanupTempFiles(...tempFiles);
@@ -1368,6 +1421,33 @@ router.post('/eval/audio', requireAuth, upload.single('audio'), async (req, res)
   }
 });
 
+
+
+// ===== GET /users/:userId/sessions/level/:levelId/today =====
+// Devuelve todas las sesiones del día actual desde Redis.
+// Usado por el gráfico "Hoy" en historial-grafico.html
+router.get("/users/:userId/sessions/level/:levelId/today", requireAuth, async (req, res) => {
+  try {
+    const user_id = Number(req.userId);
+    if (Number(req.params.userId) !== user_id) {
+      return res.status(403).json({ error: "No autorizado" });
+    }
+    const level_id = Number(req.params.levelId);
+    if (!level_id) return res.status(400).json({ error: "level_id inválido" });
+
+    const redisKey = redisDailyKey(user_id, level_id);
+    const items = await redis.lrange(redisKey, 0, -1);
+    const rows = items.map((item, i) => {
+      const parsed = JSON.parse(item);
+      return { ...parsed, session_number: i + 1 };
+    });
+
+    return res.status(200).json(rows);
+  } catch (e) {
+    console.error("sessions/today error:", e);
+    return res.status(500).json({ error: "No se pudo cargar sesiones de hoy" });
+  }
+});
 
 
 export default router;
