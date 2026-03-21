@@ -1422,11 +1422,7 @@ router.post('/eval/audio', requireAuth, upload.single('audio'), async (req, res)
 });
 
 
-
-// ===== GET /users/:userId/sessions/level/:levelId/today =====
-// Devuelve todas las sesiones del día actual desde Redis.
-// Usado por el gráfico "Hoy" en historial-grafico.html
-router.get("/users/:userId/sessions/level/:levelId/today", requireAuth, async (req, res) => {
+router.get("/users/:userId/sessions/level/:levelId/today", async (req, res) => {
   try {
     const user_id = Number(req.userId);
     if (Number(req.params.userId) !== user_id) {
