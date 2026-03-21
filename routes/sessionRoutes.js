@@ -198,10 +198,16 @@ async function finalizeAudioSession({
   const todayKey = limaDateKey(new Date());
   await query("SELECT pg_advisory_xact_lock($1,$2)", [user_id, lockKey2(immersion_level_id, todayKey)]);
 
-  const todayStart = new Date();
+  // Calcular inicio y fin del día en hora Lima (no UTC)
+  const limaToday = new Date(new Date().toLocaleString("en-US", { timeZone: TZ }));
+  const todayStart = new Date(limaToday);
   todayStart.setHours(0, 0, 0, 0);
-  const todayEnd = new Date();
+  const todayEnd = new Date(limaToday);
   todayEnd.setHours(23, 59, 59, 999);
+  // Convertir de vuelta a UTC para la query
+  const offsetMs = new Date().getTime() - limaToday.getTime();
+  const todayStartUTC = new Date(todayStart.getTime() + offsetMs);
+  const todayEndUTC   = new Date(todayEnd.getTime()   + offsetMs);
 
   const existingSessionResult = await query(
     `SELECT s.session_id, sd.star_rating, sd.progress_percentage
@@ -213,7 +219,7 @@ async function finalizeAudioSession({
          AND sd.played_at < $4::timestamp AT TIME ZONE 'America/Lima'
        ORDER BY sd.star_rating DESC, sd.progress_percentage DESC
        LIMIT 1`,
-    [user_id, immersion_level_id, todayStart.toISOString(), todayEnd.toISOString()]
+    [user_id, immersion_level_id, todayStartUTC.toISOString(), todayEndUTC.toISOString()]
   );
 
   let session_id;
@@ -585,10 +591,16 @@ router.post("/audio", requireAuth, upload.single("audio"), async (req, res) => {
       lockKey2(immersion_level_id, todayKey),
     ]);
 
-    const todayStart = new Date();
+    // Calcular inicio y fin del día en hora Lima (no UTC)
+    const limaToday = new Date(new Date().toLocaleString("en-US", { timeZone: TZ }));
+    const todayStart = new Date(limaToday);
     todayStart.setHours(0, 0, 0, 0);
-    const todayEnd = new Date();
+    const todayEnd = new Date(limaToday);
     todayEnd.setHours(23, 59, 59, 999);
+    // Convertir de vuelta a UTC para la query
+    const offsetMs = new Date().getTime() - limaToday.getTime();
+    const todayStartUTC = new Date(todayStart.getTime() + offsetMs);
+    const todayEndUTC   = new Date(todayEnd.getTime()   + offsetMs);
 
     const existingSessionResult = await query(
       `SELECT s.session_id, sd.star_rating, sd.progress_percentage
@@ -600,7 +612,7 @@ router.post("/audio", requireAuth, upload.single("audio"), async (req, res) => {
          AND sd.played_at < $4::timestamp AT TIME ZONE 'America/Lima'
        ORDER BY sd.star_rating DESC, sd.progress_percentage DESC
        LIMIT 1`,
-      [user_id, immersion_level_id, todayStart.toISOString(), todayEnd.toISOString()]
+      [user_id, immersion_level_id, todayStartUTC.toISOString(), todayEndUTC.toISOString()]
     );
 
     let session_id;
@@ -1439,24 +1451,5 @@ router.get("/users/:userId/sessions/level/:levelId/today", requireAuth, async (r
     return res.status(500).json({ error: "No se pudo cargar sesiones de hoy" });
   }
 });
-
-router.get("/debug/redis/:userId/:levelId", async (req, res) => {
-  try {
-    const user_id  = Number(req.params.userId);
-    const level_id = Number(req.params.levelId);
-    const redisKey = redisDailyKey(user_id, level_id);
-    const items    = await redis.lrange(redisKey, 0, -1);
-    const ttl      = await redis.ttl(redisKey);
-    return res.json({
-      key: redisKey,
-      ttl_seconds: ttl,
-      count: items.length,
-      sessions: items.map(i => JSON.parse(i))
-    });
-  } catch (e) {
-    return res.status(500).json({ error: String(e.message) });
-  }
-});
-
 
 export default router;
