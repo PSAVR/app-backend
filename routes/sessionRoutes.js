@@ -1422,7 +1422,7 @@ router.post('/eval/audio', requireAuth, upload.single('audio'), async (req, res)
 });
 
 
-router.get("/users/:userId/sessions/level/:levelId/today", async (req, res) => {
+router.get("/users/:userId/sessions/level/:levelId/today", requireAuth, async (req, res) => {
   try {
     const user_id = Number(req.userId);
     if (Number(req.params.userId) !== user_id) {
@@ -1445,7 +1445,7 @@ router.get("/users/:userId/sessions/level/:levelId/today", async (req, res) => {
   }
 });
 
-router.get("/debug/redis/:userId/:levelId", requireAuth, async (req, res) => {
+router.get("/debug/redis/:userId/:levelId", async (req, res) => {
   try {
     const user_id  = Number(req.params.userId);
     const level_id = Number(req.params.levelId);
