@@ -372,7 +372,6 @@ async function finalizeAudioSession({
   await query("COMMIT");
   console.log("COMMIT exitoso");
 
-  // Guardar sesión en Redis para el gráfico de hoy (TTL hasta medianoche Lima)
   try {
     const redisKey = redisDailyKey(user_id, immersion_level_id);
     const sessionData = JSON.stringify({
@@ -782,7 +781,6 @@ router.post("/audio", requireAuth, upload.single("audio"), async (req, res) => {
     await query("COMMIT");
     console.log('COMMIT exitoso');
 
-    // Guardar sesión en Redis para el gráfico de hoy (TTL hasta medianoche Lima)
     try {
       const redisKey = redisDailyKey(user_id, immersion_level_id);
       const sessionData = JSON.stringify({
@@ -800,7 +798,6 @@ router.post("/audio", requireAuth, upload.single("audio"), async (req, res) => {
       console.error("Redis RPUSH error (no crítico):", redisErr);
     }
 
-    // Limpiar archivos temporales
     await cleanupTempFiles(...tempFiles);
 
     res.status(201).json({
@@ -823,7 +820,6 @@ router.post("/audio", requireAuth, upload.single("audio"), async (req, res) => {
       console.error('Error en ROLLBACK:', rollbackErr);
     }
     
-    // Limpiar archivos en caso de error
     await cleanupTempFiles(...tempFiles);
     
     res.status(500).json({ 
@@ -949,7 +945,6 @@ router.get("/audio_result/:task_id", requireAuth, async (req, res) => {
     if (ctx?.mode !== "audio") return res.status(400).json({ error: "ctx inválido (mode)" });
     if (Number(ctx.user_id) !== user_id) return res.status(403).json({ error: "No autorizado" });
 
-    // Dedupe: if already saved for this task_id, return existing
     stage.v = "dedupe-check";
     const existing = await query(
       `SELECT s.session_id, sd.emotion_result, sd.pauses_count, sd.star_rating, sd.progress_percentage, sd.performance_summary
@@ -968,7 +963,7 @@ router.get("/audio_result/:task_id", requireAuth, async (req, res) => {
         deduped: true,
         session_id: row.session_id,
         model: {
-          anxiety_pct: null, // optional: parse from performance_summary if you want
+          anxiety_pct: null, 
           band: row.emotion_result ?? null,
         },
         detail: {
