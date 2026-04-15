@@ -25,7 +25,7 @@ const MODEL_API_URL = process.env.MODEL_API_URL || "http://localhost:8080";
 const TZ = "America/Lima";
 
 const POLL_TIMEOUT_MS = Number(process.env.POLL_TIMEOUT_MS || (10 * 60 * 1000));
-const POLL_INTERVAL_MS = Number(process.env.POLL_INTERVAL_MS || 12000);
+const POLL_INTERVAL_MS = Number(process.env.POLL_INTERVAL_MS || 7000);
 
 const SESSION_CTX_SECRET = process.env.SESSION_CTX_SECRET;
 
